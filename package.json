@@ -11,6 +11,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",
     "google-translate-api-x": "^10.7.2",
+    "msedge-tts": "^2.0.4",
     "next": "16.2.2",
     "react": "19.2.4",
     "react-dom": "19.2.4",

@@ -21,15 +21,27 @@ export default function ArticleDetail({ article }: { article: Article }) {
       : article.content_en;
 
   const date = article.published_at
-    ? new Date(article.published_at).toLocaleDateString("en-US", {
+    ? new Date(article.published_at).toLocaleDateString("zh-CN", {
         year: "numeric",
         month: "long",
         day: "numeric",
       })
     : "";
 
+  const wordCount = article.word_count || 0;
+  const readTime = Math.max(1, Math.round(wordCount / 200));
+
+  // Decode HTML entities
+  const decodedTitle = title
+    .replace(/&#8217;/g, "\u2019")
+    .replace(/&#8216;/g, "\u2018")
+    .replace(/&#8220;/g, "\u201c")
+    .replace(/&#8221;/g, "\u201d")
+    .replace(/&#8230;/g, "\u2026")
+    .replace(/&amp;/g, "&");
+
   return (
-    <article>
+    <article className="max-w-2xl mx-auto">
       <div className="mb-6">
         <Link
           href="/"
@@ -39,13 +51,18 @@ export default function ArticleDetail({ article }: { article: Article }) {
         </Link>
       </div>
 
-      <header className="mb-8">
-        <time className="text-sm text-muted">{date}</time>
-        <h1 className="text-3xl font-bold mt-2 mb-1">{title}</h1>
+      <header className="mb-10 pb-8 border-b border-border">
+        <h1 className="text-3xl font-extrabold leading-tight tracking-tight mb-3">
+          {decodedTitle}
+        </h1>
         {lang === "dual" && article.title_zh && (
-          <h2 className="text-xl text-muted">{article.title_zh}</h2>
+          <h2 className="text-xl text-muted mb-3">{article.title_zh}</h2>
         )}
-        <div className="flex items-center gap-4 mt-4">
+        <div className="flex items-center gap-2 text-sm text-muted mb-4">
+          {date && <time>Dan Koe &middot; {date}</time>}
+          {wordCount > 0 && <span>&middot; {readTime} min read</span>}
+        </div>
+        <div className="flex items-center gap-4">
           <LanguageToggle lang={lang} onChange={setLang} />
           <TTSPlayer
             textContent={ttsContent}

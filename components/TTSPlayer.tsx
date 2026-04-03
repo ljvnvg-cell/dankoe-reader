@@ -11,50 +11,74 @@ export default function TTSPlayer({
 }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const stop = useCallback(() => {
-    speechSynthesis.cancel();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      URL.revokeObjectURL(audioRef.current.src);
+      audioRef.current = null;
+    }
     setIsPlaying(false);
     setIsPaused(false);
+    setIsLoading(false);
   }, []);
 
-  const play = useCallback(() => {
-    if (isPaused) {
-      speechSynthesis.resume();
+  const play = useCallback(async () => {
+    if (isPaused && audioRef.current) {
+      audioRef.current.play();
       setIsPaused(false);
       return;
     }
 
     stop();
+    setIsLoading(true);
 
-    // Clean HTML tags for speech
-    const clean = textContent.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-    if (!clean) return;
+    try {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: textContent, lang }),
+      });
 
-    const utterance = new SpeechSynthesisUtterance(clean);
-    utterance.lang = lang === "zh" ? "zh-CN" : "en-US";
-    utterance.rate = lang === "zh" ? 0.9 : 1;
+      if (!res.ok) throw new Error("TTS failed");
 
-    utterance.onend = () => {
-      setIsPlaying(false);
-      setIsPaused(false);
-    };
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
 
-    utteranceRef.current = utterance;
-    speechSynthesis.speak(utterance);
-    setIsPlaying(true);
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        audioRef.current = null;
+        setIsPlaying(false);
+        setIsPaused(false);
+      };
+
+      audioRef.current = audio;
+      await audio.play();
+      setIsPlaying(true);
+    } catch (err) {
+      console.error("TTS error:", err);
+    } finally {
+      setIsLoading(false);
+    }
   }, [textContent, lang, isPaused, stop]);
 
   const pause = useCallback(() => {
-    speechSynthesis.pause();
-    setIsPaused(true);
+    if (audioRef.current) {
+      audioRef.current.pause();
+      setIsPaused(true);
+    }
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      speechSynthesis.cancel();
+      if (audioRef.current) {
+        audioRef.current.pause();
+        URL.revokeObjectURL(audioRef.current.src);
+      }
     };
   }, []);
 
@@ -63,13 +87,14 @@ export default function TTSPlayer({
       {!isPlaying ? (
         <button
           onClick={play}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-border hover:bg-card-bg transition-colors"
-          title="Listen to article"
+          disabled={isLoading}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-border hover:bg-card-bg transition-colors disabled:opacity-50"
+          title="朗读文章"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
             <path d="M8 5v14l11-7z" />
           </svg>
-          Listen
+          {isLoading ? "加载中..." : "朗读"}
         </button>
       ) : (
         <>
@@ -82,14 +107,14 @@ export default function TTSPlayer({
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z" />
                 </svg>
-                Resume
+                继续
               </>
             ) : (
               <>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M6 4h4v16H6zM14 4h4v16h-4z" />
                 </svg>
-                Pause
+                暂停
               </>
             )}
           </button>
@@ -100,7 +125,7 @@ export default function TTSPlayer({
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M6 6h12v12H6z" />
             </svg>
-            Stop
+            停止
           </button>
         </>
       )}

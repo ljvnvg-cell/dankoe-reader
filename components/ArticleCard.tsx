@@ -13,9 +13,7 @@ export default function ArticleCard({
   const title =
     lang === "zh"
       ? article.title_zh || article.title_en
-      : lang === "dual"
-        ? `${article.title_en}\n${article.title_zh || ""}`
-        : article.title_en;
+      : article.title_en;
 
   const summary =
     lang === "zh"
@@ -33,28 +31,45 @@ export default function ArticleCard({
   const wordCount = article.word_count || 0;
   const readTime = Math.max(1, Math.round(wordCount / 200));
 
+  // Decode HTML entities in title
+  const decodedTitle = title
+    .replace(/&#8217;/g, "'")
+    .replace(/&#8216;/g, "'")
+    .replace(/&#8220;/g, "\u201c")
+    .replace(/&#8221;/g, "\u201d")
+    .replace(/&#8230;/g, "\u2026")
+    .replace(/&amp;/g, "&");
+
   return (
     <Link href={`/article/${article.slug}`} className="block group">
-      <article className="bg-card-bg border border-border rounded-xl p-6 hover:shadow-lg transition-all duration-200 hover:-translate-y-0.5">
-        {article.cover_image && (
-          <img
-            src={article.cover_image}
-            alt=""
-            className="w-full h-48 object-cover rounded-lg mb-4"
-          />
-        )}
-        <div className="flex items-center gap-2 text-xs text-muted">
-          {date && <time>{date}</time>}
-          {date && wordCount > 0 && <span>·</span>}
-          {wordCount > 0 && <span>{readTime} min read</span>}
+      <article className="bg-card-bg border border-border rounded-xl overflow-hidden hover:shadow-lg transition-all duration-200 hover:-translate-y-0.5 h-full flex flex-col">
+        <div className="h-44 bg-accent/5 flex items-center justify-center overflow-hidden">
+          {article.cover_image ? (
+            <img
+              src={article.cover_image}
+              alt=""
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="text-4xl font-bold text-accent/20 select-none">
+              DK
+            </div>
+          )}
         </div>
-        <h2 className="text-xl font-bold mt-1 mb-2 group-hover:text-accent transition-colors whitespace-pre-line">
-          {title}
-        </h2>
-        {lang === "dual" && article.title_zh && (
-          <p className="text-base text-muted mb-2">{article.title_zh}</p>
-        )}
-        <p className="text-sm text-muted line-clamp-3">{summary}</p>
+        <div className="p-5 flex flex-col flex-1">
+          <div className="flex items-center gap-2 text-xs text-muted mb-2">
+            {date && <time>{date}</time>}
+            {date && wordCount > 0 && <span>&middot;</span>}
+            {wordCount > 0 && <span>{readTime} min</span>}
+          </div>
+          <h2 className="text-lg font-bold mb-2 group-hover:text-accent transition-colors leading-snug">
+            {decodedTitle}
+          </h2>
+          {lang === "dual" && article.title_zh && (
+            <p className="text-sm text-muted mb-2">{article.title_zh}</p>
+          )}
+          <p className="text-sm text-muted line-clamp-2 mt-auto">{summary}</p>
+        </div>
       </article>
     </Link>
   );
