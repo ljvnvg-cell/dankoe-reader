@@ -10,14 +10,16 @@ export default function TTSPlayer({
   lang: "en" | "zh";
 }) {
   const [status, setStatus] = useState<
-    "idle" | "loading" | "playing" | "paused"
+    "idle" | "loading" | "playing" | "paused" | "error"
   >("idle");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const blobUrlRef = useRef<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      abortRef.current?.abort();
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
@@ -48,6 +50,7 @@ export default function TTSPlayer({
     }
 
     // Stop any existing audio
+    abortRef.current?.abort();
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
@@ -60,26 +63,40 @@ export default function TTSPlayer({
     setStatus("loading");
 
     try {
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      // 30 second timeout
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
       const res = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: cleanText, lang }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!res.ok) {
         console.error("TTS API error:", res.status);
-        setStatus("idle");
+        setStatus("error");
         return;
       }
 
       const blob = await res.blob();
+      if (blob.size === 0) {
+        console.error("TTS returned empty audio");
+        setStatus("error");
+        return;
+      }
+
       const url = URL.createObjectURL(blob);
       blobUrlRef.current = url;
 
       const audio = new Audio(url);
       audioRef.current = audio;
 
-      // Set up event handlers before playing
       audio.onended = () => {
         setStatus("idle");
         audioRef.current = null;
@@ -91,14 +108,18 @@ export default function TTSPlayer({
 
       audio.onerror = (e) => {
         console.error("Audio playback error:", e);
-        setStatus("idle");
+        setStatus("error");
       };
 
       await audio.play();
       setStatus("playing");
     } catch (err) {
-      console.error("TTS error:", err);
-      setStatus("idle");
+      if (err instanceof DOMException && err.name === "AbortError") {
+        console.error("TTS request timed out");
+      } else {
+        console.error("TTS error:", err);
+      }
+      setStatus("error");
     }
   }
 
@@ -110,6 +131,7 @@ export default function TTSPlayer({
   }
 
   function handleStop() {
+    abortRef.current?.abort();
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
@@ -138,8 +160,9 @@ export default function TTSPlayer({
 
       {status === "loading" && (
         <button
-          disabled
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-border opacity-50"
+          onClick={handleStop}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-border opacity-70 hover:opacity-100 transition-opacity"
+          title="取消加载"
         >
           <svg
             width="16"
@@ -156,6 +179,20 @@ export default function TTSPlayer({
         </button>
       )}
 
+      {status === "error" && (
+        <button
+          onClick={handlePlay}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-red-300 text-red-500 hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/20 transition-colors"
+          title="重新加载"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M1 4v6h6M23 20v-6h-6" />
+            <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15" />
+          </svg>
+          加载失败，点击重试
+        </button>
+      )}
+
       {(status === "playing" || status === "paused") && (
         <>
           <button
@@ -164,24 +201,14 @@ export default function TTSPlayer({
           >
             {status === "paused" ? (
               <>
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z" />
                 </svg>
                 继续
               </>
             ) : (
               <>
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M6 4h4v16H6zM14 4h4v16h-4z" />
                 </svg>
                 暂停
@@ -192,12 +219,7 @@ export default function TTSPlayer({
             onClick={handleStop}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-border hover:bg-card-bg transition-colors"
           >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-            >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
               <path d="M6 6h12v12H6z" />
             </svg>
             停止

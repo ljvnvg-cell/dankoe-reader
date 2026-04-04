@@ -30,6 +30,16 @@ export default function ArticleCard({
 
   const wordCount = article.word_count || 0;
   const readTime = Math.max(1, Math.round(wordCount / 200));
+  const popularity = article.popularity || 0;
+  // Show view count if it looks like a YouTube view count (> word count threshold)
+  const hasViews = popularity > 5000;
+  const viewsDisplay = hasViews
+    ? popularity >= 1_000_000
+      ? (popularity / 1_000_000).toFixed(1) + "M"
+      : popularity >= 1_000
+      ? (popularity / 1_000).toFixed(1) + "K"
+      : popularity.toString()
+    : null;
 
   // Decode HTML entities in title
   const decodedTitle = title
@@ -58,15 +68,13 @@ export default function ArticleCard({
         </div>
         <div className="p-5 flex flex-col flex-1">
           <div className="flex items-center flex-wrap gap-2 text-xs text-muted mb-2">
+            {viewsDisplay && (
+              <span className="text-accent font-medium">{viewsDisplay} views</span>
+            )}
+            {viewsDisplay && date && <span>&middot;</span>}
             {date && <time>{date}</time>}
             {date && wordCount > 0 && <span>&middot;</span>}
             {wordCount > 0 && <span>{readTime} min</span>}
-            {wordCount > 0 && (
-              <>
-                <span>&middot;</span>
-                <span>{wordCount.toLocaleString()} 词</span>
-              </>
-            )}
           </div>
           <h2 className="text-lg font-bold mb-2 group-hover:text-accent transition-colors leading-snug">
             {decodedTitle}

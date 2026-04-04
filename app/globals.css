@@ -37,6 +37,18 @@
   }
 }
 
+::selection {
+  background-color: rgba(37, 99, 235, 0.3);
+  color: inherit;
+}
+
+@media (prefers-color-scheme: dark) {
+  ::selection {
+    background-color: rgba(96, 165, 250, 0.35);
+    color: inherit;
+  }
+}
+
 body {
   background: var(--background);
   color: var(--foreground);

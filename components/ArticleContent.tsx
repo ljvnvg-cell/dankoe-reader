@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, memo } from "react";
 import type { Article, Highlight } from "@/lib/supabase";
 import type { Lang } from "./LanguageToggle";
 import HighlightPopover from "./HighlightPopover";
@@ -65,6 +65,70 @@ function applyHighlightsToDOM(
   }
 }
 
+/**
+ * Memoized article HTML renderer — prevents re-render when popover state changes,
+ * which would destroy the DOM and clear the user's text selection.
+ */
+const ArticleHTML = memo(function ArticleHTML({
+  html,
+  className,
+}: {
+  html: string;
+  className?: string;
+}) {
+  return (
+    <div
+      className={className || "article-content"}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+});
+
+/**
+ * Memoized dual content renderer
+ */
+const DualContent = memo(function DualContent({
+  htmlEn,
+  htmlZh,
+}: {
+  htmlEn: string;
+  htmlZh: string;
+}) {
+  const parasEn = splitParagraphs(htmlEn);
+  const parasZh = splitParagraphs(htmlZh);
+  const maxLen = Math.max(parasEn.length, parasZh.length);
+
+  return (
+    <>
+      {Array.from({ length: maxLen }, (_, i) => (
+        <div key={i} className="mb-6">
+          {parasEn[i] && (
+            <div
+              className="article-content text-foreground"
+              dangerouslySetInnerHTML={{ __html: parasEn[i] }}
+            />
+          )}
+          {parasZh[i] && (
+            <div
+              className="article-content text-muted mt-2 pl-4 border-l-2 border-accent/30"
+              dangerouslySetInnerHTML={{ __html: parasZh[i] }}
+            />
+          )}
+        </div>
+      ))}
+    </>
+  );
+});
+
+function splitParagraphs(html: string): string[] {
+  if (!html) return [];
+  const parts = html
+    .split(/(?<=<\/(?:p|h[1-6]|li|blockquote|div)>)/gi)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return parts;
+}
+
 export default function ArticleContent({
   article,
   lang,
@@ -74,6 +138,7 @@ export default function ArticleContent({
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
   const [highlights, setHighlights] = useState<Highlight[]>([]);
+  // Use ref for popover state to avoid re-rendering content area
   const [popover, setPopover] = useState<{
     x: number;
     y: number;
@@ -130,6 +195,7 @@ export default function ArticleContent({
       y: rect.top - 10,
       text,
     });
+    // Do NOT clear selection here — user needs to see it
   }, []);
 
   const handleHighlight = useCallback(async () => {
@@ -160,7 +226,6 @@ export default function ArticleContent({
 
   const contentEn = article.content_en || "";
   const contentZh = article.content_zh || "";
-
   const displayHtml = lang === "zh" ? contentZh || contentEn : contentEn;
 
   return (
@@ -177,10 +242,7 @@ export default function ArticleContent({
             <DualContent htmlEn={contentEn} htmlZh={contentZh} />
           </div>
         ) : (
-          <div
-            className="article-content"
-            dangerouslySetInnerHTML={{ __html: displayHtml }}
-          />
+          <ArticleHTML html={displayHtml} />
         )}
       </div>
 
@@ -194,43 +256,4 @@ export default function ArticleContent({
       )}
     </div>
   );
-}
-
-/**
- * Dual language display - alternating English and Chinese paragraphs
- */
-function DualContent({ htmlEn, htmlZh }: { htmlEn: string; htmlZh: string }) {
-  const parasEn = splitParagraphs(htmlEn);
-  const parasZh = splitParagraphs(htmlZh);
-  const maxLen = Math.max(parasEn.length, parasZh.length);
-
-  return (
-    <>
-      {Array.from({ length: maxLen }, (_, i) => (
-        <div key={i} className="mb-6">
-          {parasEn[i] && (
-            <div
-              className="article-content text-foreground"
-              dangerouslySetInnerHTML={{ __html: parasEn[i] }}
-            />
-          )}
-          {parasZh[i] && (
-            <div
-              className="article-content text-muted mt-2 pl-4 border-l-2 border-accent/30"
-              dangerouslySetInnerHTML={{ __html: parasZh[i] }}
-            />
-          )}
-        </div>
-      ))}
-    </>
-  );
-}
-
-function splitParagraphs(html: string): string[] {
-  if (!html) return [];
-  const parts = html
-    .split(/(?<=<\/(?:p|h[1-6]|li|blockquote|div)>)/gi)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  return parts;
 }
