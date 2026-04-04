@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
   // Use natural male voices to match the original author (Dan Koe)
   const voice =
     lang === "zh"
-      ? "zh-CN-YunxiNeural" // Male, natural Chinese
+      ? "zh-CN-YunjianNeural" // Male, natural Chinese
       : "en-US-GuyNeural"; // Male, natural English
 
   await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);

@@ -51,42 +51,54 @@ export default function ArticleContent({
     if (!popover) return;
 
     const textToSave = popover.text;
-    const isZh = lang === "zh";
+    const isZh = lang === "zh" || lang === "dual";
 
-    // Close popover immediately for responsiveness
+    // Close popover and clear selection
     setPopover(null);
-
-    const result = await addHighlight({
-      articleId: article.id,
-      textEn: isZh ? null : textToSave,
-      textZh: isZh ? textToSave : null,
-      paragraphIndex: null,
-    });
-
-    if (result) {
-      setHighlights((prev) => [...prev, result]);
-    }
     window.getSelection()?.removeAllRanges();
+
+    try {
+      const result = await addHighlight({
+        articleId: article.id,
+        textEn: isZh ? null : textToSave,
+        textZh: isZh ? textToSave : null,
+        paragraphIndex: null,
+      });
+
+      if (result) {
+        setHighlights((prev) => [...prev, result]);
+      }
+    } catch (err) {
+      console.error("Highlight save failed:", err);
+    }
   }, [popover, article.id, lang]);
 
   const contentEn = article.content_en || "";
   const contentZh = article.content_zh || "";
 
-  // Apply highlights to HTML content
+  // Apply highlights to HTML content by text-matching outside of tags
   const applyHighlights = useCallback(
     (html: string) => {
       if (highlights.length === 0) return html;
       let result = html;
       for (const h of highlights) {
         const text = h.text_zh || h.text_en;
-        if (!text) continue;
-        // Escape regex special chars
+        if (!text || text.length < 3) continue;
+        // Simple approach: split by tags, replace in text parts only
         const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         try {
-          result = result.replace(
-            new RegExp(`(?<![<][^>]*)${escaped}`, "g"),
-            `<mark class="user-highlight">${text}</mark>`
-          );
+          // Split into tag and non-tag segments
+          const parts = result.split(/(<[^>]+>)/);
+          result = parts
+            .map((part) => {
+              // Don't replace inside HTML tags
+              if (part.startsWith("<")) return part;
+              return part.replace(
+                new RegExp(escaped, "g"),
+                `<mark class="user-highlight">${text}</mark>`
+              );
+            })
+            .join("");
         } catch {
           // Skip invalid regex
         }

@@ -5,7 +5,9 @@ function fixLazyImages(html: string): string {
   return html.replace(
     /<img([^>]*)src="data:image\/svg\+xml[^"]*"([^>]*)data-lazy-src="([^"]+)"([^>]*)\/?\s*>/gi,
     (_, before, mid, realSrc, after) => {
-      const srcsetMatch = `${before}${mid}${after}`.match(/data-lazy-srcset="([^"]+)"/);
+      const srcsetMatch = `${before}${mid}${after}`.match(
+        /data-lazy-srcset="([^"]+)"/
+      );
       const srcset = srcsetMatch ? ` srcset="${srcsetMatch[1]}"` : "";
       const cleanAttrs = `${before}${mid}${after}`
         .replace(/data-lazy-src="[^"]*"/g, "")
@@ -17,14 +19,32 @@ function fixLazyImages(html: string): string {
   );
 }
 
-function fixTranslatedImgAttrs(html: string): string {
-  // Fix translated img attributes like 解码="async" back to decoding="async"
-  return html
-    .replace(/解码="([^"]+)"/g, 'decoding="$1"')
-    .replace(/宽度="([^"]+)"/g, 'width="$1"')
-    .replace(/高度="([^"]+)"/g, 'height="$1"')
-    .replace(/加载="([^"]+)"/g, 'loading="$1"')
-    .replace(/获取优先级="([^"]+)"/g, 'fetchpriority="$1"');
+/**
+ * Extract clean img tags from English content, then replace
+ * all img tags (including mangled ones) in Chinese content
+ * with the English originals in order.
+ */
+function fixZhImages(contentEn: string, contentZh: string): string {
+  // Get all clean img tags from English content
+  const enImgs = contentEn.match(/<img\s[^>]+>/gi) || [];
+  if (enImgs.length === 0) return contentZh;
+
+  // Match both normal and mangled img tags in Chinese content
+  // Mangled: <img解码=, <img 加载=, <img src=, etc.
+  const zhImgPattern =
+    /<img(?:\s|[^\s>a-zA-Z])[^>]*>/gi;
+  const zhImgs = contentZh.match(zhImgPattern) || [];
+
+  if (zhImgs.length === 0) return contentZh;
+
+  // Replace each zh img tag with the corresponding en one
+  let idx = 0;
+  return contentZh.replace(zhImgPattern, () => {
+    if (idx < enImgs.length) {
+      return enImgs[idx++];
+    }
+    return enImgs[enImgs.length - 1] || "";
+  });
 }
 
 export async function GET(request: NextRequest) {
@@ -34,11 +54,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const action = request.nextUrl.searchParams.get("action") || "all";
   const supabase = createServerClient();
   const { data: articles } = await supabase
     .from("articles")
-    .select("id, original_url, content_en, content_zh, published_at, word_count");
+    .select(
+      "id, original_url, content_en, content_zh, published_at, word_count"
+    );
 
   if (!articles) return NextResponse.json({ error: "No articles" });
 
@@ -46,26 +67,23 @@ export async function GET(request: NextRequest) {
   for (const article of articles) {
     const updates: Record<string, unknown> = {};
 
-    // Fix lazy-loaded images in content
-    if (action === "all" || action === "images") {
-      if (article.content_en && article.content_en.includes("data-lazy-src")) {
-        updates.content_en = fixLazyImages(article.content_en);
-      }
-      if (article.content_zh) {
-        let fixed = article.content_zh;
-        if (fixed.includes("data-lazy-src")) {
-          fixed = fixLazyImages(fixed);
-        }
-        // Fix translated HTML attributes
-        fixed = fixTranslatedImgAttrs(fixed);
-        if (fixed !== article.content_zh) {
-          updates.content_zh = fixed;
-        }
+    // Step 1: Fix lazy images in English content
+    if (article.content_en && article.content_en.includes("data-lazy-src")) {
+      updates.content_en = fixLazyImages(article.content_en);
+    }
+
+    // Step 2: Fix Chinese content images (use English images as source of truth)
+    const cleanEn =
+      (updates.content_en as string) || article.content_en || "";
+    if (article.content_zh && cleanEn) {
+      const fixedZh = fixZhImages(cleanEn, article.content_zh);
+      if (fixedZh !== article.content_zh) {
+        updates.content_zh = fixedZh;
       }
     }
 
-    // Fix missing published_at by scraping the page
-    if ((action === "all" || action === "dates") && !article.published_at) {
+    // Step 3: Fix missing published_at
+    if (!article.published_at) {
       try {
         const res = await fetch(article.original_url, {
           signal: AbortSignal.timeout(10000),
@@ -83,8 +101,8 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Fix missing word_count
-    if ((action === "all" || action === "wordcount") && !article.word_count && article.content_en) {
+    // Step 4: Fix missing word_count
+    if (!article.word_count && article.content_en) {
       const plainText = article.content_en.replace(/<[^>]+>/g, " ").trim();
       const wc = plainText.split(/\s+/).filter(Boolean).length;
       updates.word_count = wc;
@@ -97,7 +115,7 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ total: articles.length, updated, action });
+  return NextResponse.json({ total: articles.length, updated });
 }
 
 export const maxDuration = 300;
