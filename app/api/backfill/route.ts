@@ -1,22 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClient } from "@/lib/supabase";
 
-function fixLazyImages(html: string): string {
-  return html.replace(
+function fixImages(html: string): string {
+  // Step 1: Strip <picture> wrappers and <source> tags, keep only <img>
+  let result = html.replace(
+    /<picture[^>]*>[\s\S]*?(<img[\s\S]*?>)[\s\S]*?<\/picture>/gi,
+    "$1"
+  );
+  result = result.replace(/<source[^>]*\/?>/gi, "");
+
+  // Step 2: Fix lazy-loaded images
+  result = result.replace(
     /<img([^>]*)src="data:image\/svg\+xml[^"]*"([^>]*)data-lazy-src="([^"]+)"([^>]*)\/?\s*>/gi,
     (_, before, mid, realSrc, after) => {
-      const srcsetMatch = `${before}${mid}${after}`.match(
-        /data-lazy-srcset="([^"]+)"/
-      );
-      const srcset = srcsetMatch ? ` srcset="${srcsetMatch[1]}"` : "";
       const cleanAttrs = `${before}${mid}${after}`
         .replace(/data-lazy-src="[^"]*"/g, "")
         .replace(/data-lazy-srcset="[^"]*"/g, "")
         .replace(/data-lazy-sizes="[^"]*"/g, "")
         .replace(/\s+/g, " ");
-      return `<img src="${realSrc}"${srcset}${cleanAttrs}/>`;
+      return `<img src="${realSrc}"${cleanAttrs}/>`;
     }
   );
+
+  return result;
 }
 
 /**
@@ -67,16 +73,44 @@ export async function GET(request: NextRequest) {
   for (const article of articles) {
     const updates: Record<string, unknown> = {};
 
-    // Step 1: Fix lazy images in English content
-    if (article.content_en && article.content_en.includes("data-lazy-src")) {
-      updates.content_en = fixLazyImages(article.content_en);
+    // Step 1: Fix images in English content (lazy-load + picture/source tags)
+    if (article.content_en) {
+      let fixedEn = article.content_en;
+      if (
+        fixedEn.includes("data-lazy-src") ||
+        fixedEn.includes("<picture") ||
+        fixedEn.includes("<source")
+      ) {
+        fixedEn = fixImages(fixedEn);
+      }
+      // Nuclear fallback strip
+      fixedEn = fixedEn.replace(/<\/?picture[^>]*>/gi, "");
+      fixedEn = fixedEn.replace(/<source[^>]*\/?>/gi, "");
+      if (fixedEn !== article.content_en) {
+        updates.content_en = fixedEn;
+      }
     }
 
-    // Step 2: Fix Chinese content images (use English images as source of truth)
-    const cleanEn =
-      (updates.content_en as string) || article.content_en || "";
-    if (article.content_zh && cleanEn) {
-      const fixedZh = fixZhImages(cleanEn, article.content_zh);
+    // Step 2: Fix Chinese content — apply same image fixes, then
+    // replace any remaining broken img tags with clean ones from English
+    if (article.content_zh) {
+      let fixedZh = article.content_zh;
+      if (
+        fixedZh.includes("data-lazy-src") ||
+        fixedZh.includes("<picture") ||
+        fixedZh.includes("<source")
+      ) {
+        fixedZh = fixImages(fixedZh);
+      }
+      const cleanEn =
+        (updates.content_en as string) || article.content_en || "";
+      if (cleanEn) {
+        fixedZh = fixZhImages(cleanEn, fixedZh);
+      }
+      // Nuclear fallback: strip any remaining <picture>/<source> tags
+      // that survived the regex-based fixImages (e.g. malformed ZH HTML)
+      fixedZh = fixedZh.replace(/<\/?picture[^>]*>/gi, "");
+      fixedZh = fixedZh.replace(/<source[^>]*\/?>/gi, "");
       if (fixedZh !== article.content_zh) {
         updates.content_zh = fixedZh;
       }

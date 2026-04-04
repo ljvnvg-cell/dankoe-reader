@@ -6,6 +6,65 @@ import type { Lang } from "./LanguageToggle";
 import HighlightPopover from "./HighlightPopover";
 import { getHighlightsForArticle, addHighlight } from "@/lib/highlights";
 
+/**
+ * Walk the DOM and wrap matching text with <mark> tags
+ */
+function applyHighlightsToDOM(
+  container: HTMLElement,
+  highlights: Highlight[]
+) {
+  if (highlights.length === 0) return;
+
+  for (const h of highlights) {
+    const text = h.text_zh || h.text_en;
+    if (!text || text.length < 2) continue;
+
+    const walker = document.createTreeWalker(
+      container,
+      NodeFilter.SHOW_TEXT,
+      null
+    );
+
+    const nodesToProcess: { node: Text; index: number }[] = [];
+    let node: Text | null;
+    while ((node = walker.nextNode() as Text | null)) {
+      const idx = node.textContent?.indexOf(text) ?? -1;
+      if (idx >= 0) {
+        nodesToProcess.push({ node, index: idx });
+      }
+    }
+
+    // Process in reverse to avoid invalidating earlier nodes
+    for (let i = nodesToProcess.length - 1; i >= 0; i--) {
+      const { node: textNode, index } = nodesToProcess[i];
+      const parent = textNode.parentNode;
+      if (!parent) continue;
+      // Don't re-highlight already highlighted text
+      if (
+        parent instanceof HTMLElement &&
+        parent.classList.contains("user-highlight")
+      )
+        continue;
+
+      const before = textNode.textContent!.slice(0, index);
+      const match = textNode.textContent!.slice(index, index + text.length);
+      const after = textNode.textContent!.slice(index + text.length);
+
+      const frag = document.createDocumentFragment();
+      if (before) frag.appendChild(document.createTextNode(before));
+
+      const mark = document.createElement("mark");
+      mark.className = "user-highlight";
+      mark.textContent = match;
+      frag.appendChild(mark);
+
+      if (after) frag.appendChild(document.createTextNode(after));
+
+      parent.replaceChild(frag, textNode);
+    }
+  }
+}
+
 export default function ArticleContent({
   article,
   lang,
@@ -24,6 +83,32 @@ export default function ArticleContent({
   useEffect(() => {
     getHighlightsForArticle(article.id).then(setHighlights);
   }, [article.id]);
+
+  // Apply highlights to the DOM after rendering
+  useEffect(() => {
+    if (contentRef.current && highlights.length > 0) {
+      // Small delay to ensure content is rendered
+      const timer = setTimeout(() => {
+        if (contentRef.current) {
+          // Remove existing marks first
+          contentRef.current
+            .querySelectorAll("mark.user-highlight")
+            .forEach((mark) => {
+              const parent = mark.parentNode;
+              if (parent) {
+                parent.replaceChild(
+                  document.createTextNode(mark.textContent || ""),
+                  mark
+                );
+                parent.normalize(); // Merge adjacent text nodes
+              }
+            });
+          applyHighlightsToDOM(contentRef.current, highlights);
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [highlights, lang]);
 
   const handleMouseUp = useCallback(() => {
     const selection = window.getSelection();
@@ -76,61 +161,28 @@ export default function ArticleContent({
   const contentEn = article.content_en || "";
   const contentZh = article.content_zh || "";
 
-  // Apply highlights to HTML content by text-matching outside of tags
-  const applyHighlights = useCallback(
-    (html: string) => {
-      if (highlights.length === 0) return html;
-      let result = html;
-      for (const h of highlights) {
-        const text = h.text_zh || h.text_en;
-        if (!text || text.length < 3) continue;
-        // Simple approach: split by tags, replace in text parts only
-        const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        try {
-          // Split into tag and non-tag segments
-          const parts = result.split(/(<[^>]+>)/);
-          result = parts
-            .map((part) => {
-              // Don't replace inside HTML tags
-              if (part.startsWith("<")) return part;
-              return part.replace(
-                new RegExp(escaped, "g"),
-                `<mark class="user-highlight">${text}</mark>`
-              );
-            })
-            .join("");
-        } catch {
-          // Skip invalid regex
-        }
-      }
-      return result;
-    },
-    [highlights]
-  );
-
-  const displayHtml =
-    lang === "zh" ? contentZh || contentEn : contentEn;
+  const displayHtml = lang === "zh" ? contentZh || contentEn : contentEn;
 
   return (
-    <div ref={contentRef} onMouseUp={handleMouseUp} className="relative">
+    <div className="relative">
       {highlights.length > 0 && (
         <div className="mb-4 px-3 py-2 bg-highlight/20 rounded-lg text-sm text-muted">
           已划线 {highlights.length} 处
         </div>
       )}
 
-      {lang === "dual" ? (
-        <div className="space-y-6">
-          <DualContent htmlEn={contentEn} htmlZh={contentZh} />
-        </div>
-      ) : (
-        <div
-          className="article-content"
-          dangerouslySetInnerHTML={{
-            __html: applyHighlights(displayHtml),
-          }}
-        />
-      )}
+      <div ref={contentRef} onMouseUp={handleMouseUp}>
+        {lang === "dual" ? (
+          <div className="space-y-6">
+            <DualContent htmlEn={contentEn} htmlZh={contentZh} />
+          </div>
+        ) : (
+          <div
+            className="article-content"
+            dangerouslySetInnerHTML={{ __html: displayHtml }}
+          />
+        )}
+      </div>
 
       {popover && (
         <HighlightPopover
@@ -176,7 +228,6 @@ function DualContent({ htmlEn, htmlZh }: { htmlEn: string; htmlZh: string }) {
 
 function splitParagraphs(html: string): string[] {
   if (!html) return [];
-  // Split on block-level closing tags
   const parts = html
     .split(/(?<=<\/(?:p|h[1-6]|li|blockquote|div)>)/gi)
     .map((s) => s.trim())

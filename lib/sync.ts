@@ -90,20 +90,24 @@ async function fetchArticlePage(url: string): Promise<{
     const dateStr = jsonLdDate?.[1] || timeDate?.[1] || null;
     const publishedAt = dateStr ? new Date(dateStr).toISOString() : null;
 
+    // Strip <picture> wrappers and <source> tags — keep only <img> inside
+    content = content.replace(
+      /<picture[^>]*>[\s\S]*?(<img[\s\S]*?>)[\s\S]*?<\/picture>/gi,
+      "$1"
+    );
+    // Remove orphan <source> tags
+    content = content.replace(/<source[^>]*\/?>/gi, "");
+
     // Fix lazy-loaded images: replace placeholder src with real data-lazy-src
     content = content.replace(
       /<img([^>]*)src="data:image\/svg\+xml[^"]*"([^>]*)data-lazy-src="([^"]+)"([^>]*)\/?\s*>/gi,
       (_, before, mid, realSrc, after) => {
-        // Also grab data-lazy-srcset for responsive images
-        const srcsetMatch = `${before}${mid}${after}`.match(/data-lazy-srcset="([^"]+)"/);
-        const srcset = srcsetMatch ? ` srcset="${srcsetMatch[1]}"` : "";
-        // Clean up lazy attributes
         const cleanAttrs = `${before}${mid}${after}`
           .replace(/data-lazy-src="[^"]*"/g, "")
           .replace(/data-lazy-srcset="[^"]*"/g, "")
           .replace(/data-lazy-sizes="[^"]*"/g, "")
           .replace(/\s+/g, " ");
-        return `<img src="${realSrc}"${srcset}${cleanAttrs}/>`;
+        return `<img src="${realSrc}"${cleanAttrs}/>`;
       }
     );
 
