@@ -90,6 +90,23 @@ async function fetchArticlePage(url: string): Promise<{
     const dateStr = jsonLdDate?.[1] || timeDate?.[1] || null;
     const publishedAt = dateStr ? new Date(dateStr).toISOString() : null;
 
+    // Fix lazy-loaded images: replace placeholder src with real data-lazy-src
+    content = content.replace(
+      /<img([^>]*)src="data:image\/svg\+xml[^"]*"([^>]*)data-lazy-src="([^"]+)"([^>]*)\/?\s*>/gi,
+      (_, before, mid, realSrc, after) => {
+        // Also grab data-lazy-srcset for responsive images
+        const srcsetMatch = `${before}${mid}${after}`.match(/data-lazy-srcset="([^"]+)"/);
+        const srcset = srcsetMatch ? ` srcset="${srcsetMatch[1]}"` : "";
+        // Clean up lazy attributes
+        const cleanAttrs = `${before}${mid}${after}`
+          .replace(/data-lazy-src="[^"]*"/g, "")
+          .replace(/data-lazy-srcset="[^"]*"/g, "")
+          .replace(/data-lazy-sizes="[^"]*"/g, "")
+          .replace(/\s+/g, " ");
+        return `<img src="${realSrc}"${srcset}${cleanAttrs}/>`;
+      }
+    );
+
     // Calculate word count for popularity estimation
     const plainText = content.replace(/<[^>]+>/g, " ").trim();
     const wordCount = plainText.split(/\s+/).filter(Boolean).length;

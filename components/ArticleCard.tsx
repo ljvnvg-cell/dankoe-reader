@@ -61,6 +61,17 @@ export default function ArticleCard({
             {date && <time>{date}</time>}
             {date && wordCount > 0 && <span>&middot;</span>}
             {wordCount > 0 && <span>{readTime} min</span>}
+            {wordCount > 0 && (
+              <>
+                <span>&middot;</span>
+                <span className="inline-flex items-center gap-0.5">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                  </svg>
+                  {wordCount > 2000 ? "深度" : wordCount > 1000 ? "中篇" : "短篇"}
+                </span>
+              </>
+            )}
           </div>
           <h2 className="text-lg font-bold mb-2 group-hover:text-accent transition-colors leading-snug">
             {decodedTitle}

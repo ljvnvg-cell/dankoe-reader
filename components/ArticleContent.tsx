@@ -50,26 +50,63 @@ export default function ArticleContent({
   const handleHighlight = useCallback(async () => {
     if (!popover) return;
 
+    const textToSave = popover.text;
     const isZh = lang === "zh";
+
+    // Close popover immediately for responsiveness
+    setPopover(null);
+
     const result = await addHighlight({
       articleId: article.id,
-      textEn: isZh ? null : popover.text,
-      textZh: isZh ? popover.text : null,
+      textEn: isZh ? null : textToSave,
+      textZh: isZh ? textToSave : null,
       paragraphIndex: null,
     });
 
     if (result) {
       setHighlights((prev) => [...prev, result]);
     }
-    setPopover(null);
     window.getSelection()?.removeAllRanges();
   }, [popover, article.id, lang]);
 
   const contentEn = article.content_en || "";
   const contentZh = article.content_zh || "";
 
+  // Apply highlights to HTML content
+  const applyHighlights = useCallback(
+    (html: string) => {
+      if (highlights.length === 0) return html;
+      let result = html;
+      for (const h of highlights) {
+        const text = h.text_zh || h.text_en;
+        if (!text) continue;
+        // Escape regex special chars
+        const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        try {
+          result = result.replace(
+            new RegExp(`(?<![<][^>]*)${escaped}`, "g"),
+            `<mark class="user-highlight">${text}</mark>`
+          );
+        } catch {
+          // Skip invalid regex
+        }
+      }
+      return result;
+    },
+    [highlights]
+  );
+
+  const displayHtml =
+    lang === "zh" ? contentZh || contentEn : contentEn;
+
   return (
     <div ref={contentRef} onMouseUp={handleMouseUp} className="relative">
+      {highlights.length > 0 && (
+        <div className="mb-4 px-3 py-2 bg-highlight/20 rounded-lg text-sm text-muted">
+          已划线 {highlights.length} 处
+        </div>
+      )}
+
       {lang === "dual" ? (
         <div className="space-y-6">
           <DualContent htmlEn={contentEn} htmlZh={contentZh} />
@@ -78,7 +115,7 @@ export default function ArticleContent({
         <div
           className="article-content"
           dangerouslySetInnerHTML={{
-            __html: lang === "zh" ? contentZh || contentEn : contentEn,
+            __html: applyHighlights(displayHtml),
           }}
         />
       )}

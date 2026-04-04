@@ -44,11 +44,32 @@ export async function translateHTML(html: string): Promise<string> {
     const text = block.content.trim();
     if (text.length === 0) continue;
 
+    // Skip blocks that are only images/media (no meaningful text)
+    const textOnly = text.replace(/<[^>]+>/g, "").trim();
+    if (textOnly.length === 0) continue;
+
     try {
-      const translated = await translate(text, { from: "en", to: "zh-CN" });
+      // Extract and preserve img/iframe tags before translating
+      const mediaPlaceholders: string[] = [];
+      const textToTranslate = text.replace(
+        /<(?:img|iframe|video|source)[^>]*\/?>/gi,
+        (tag) => {
+          mediaPlaceholders.push(tag);
+          return `__MEDIA_${mediaPlaceholders.length - 1}__`;
+        }
+      );
+
+      const translated = await translate(textToTranslate, { from: "en", to: "zh-CN" });
+
+      // Restore media tags
+      let translatedText = translated.text;
+      mediaPlaceholders.forEach((tag, i) => {
+        translatedText = translatedText.replace(`__MEDIA_${i}__`, tag);
+      });
+
       result = result.replace(
         block.full,
-        `${block.tag}${translated.text}${block.close}`
+        `${block.tag}${translatedText}${block.close}`
       );
       // Small delay to be respectful to the API
       await new Promise((r) => setTimeout(r, 200));
