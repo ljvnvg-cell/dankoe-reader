@@ -168,28 +168,25 @@ async function fetchSitemapUrls(): Promise<string[]> {
 
 const SUBSTACK_API = "https://letters.thedankoe.com/api/v1";
 
+type SubstackPost = {
+  title: string;
+  slug: string;
+  content: string;
+  coverImage: string | null;
+  publishedAt: string | null;
+  url: string;
+  likes: number;
+  wordCount: number;
+  youtubeVideoId: string | null;
+};
+
 /**
- * Fetch articles from Substack API (post-2025-09 content)
+ * Fetch article list from Substack archive API (metadata only, no body)
  */
-async function fetchSubstackPosts(
-  limit: number
-): Promise<
-  {
-    title: string;
-    slug: string;
-    content: string;
-    coverImage: string | null;
-    publishedAt: string | null;
-    url: string;
-    likes: number;
-    wordCount: number;
-    youtubeVideoId: string | null;
-  }[]
-> {
+async function fetchSubstackArchive(): Promise<any[]> {
   const posts: any[] = [];
   let offset = 0;
-  // Fetch in pages of 50
-  while (posts.length < limit + 200) {
+  while (true) {
     try {
       const res = await fetch(
         `${SUBSTACK_API}/archive?sort=new&limit=50&offset=${offset}`,
@@ -203,27 +200,53 @@ async function fetchSubstackPosts(
       if (!Array.isArray(batch) || batch.length === 0) break;
       posts.push(...batch);
       offset += 50;
+      if (batch.length < 50) break;
     } catch {
       break;
     }
   }
+  return posts;
+}
 
-  return posts.map((p) => {
-    const html = p.body_html || "";
-    const plainText = html.replace(/<[^>]+>/g, " ").trim();
-    const ytMatch = html.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]+)/);
-    return {
-      title: p.title || "",
-      slug: p.slug || slugify(p.title || ""),
-      content: html,
-      coverImage: p.cover_image || null,
-      publishedAt: p.post_date ? new Date(p.post_date).toISOString() : null,
-      url: p.canonical_url || `https://letters.thedankoe.com/p/${p.slug}`,
-      likes: p.reactions?.["❤"] || 0,
-      wordCount: plainText.split(/\s+/).filter(Boolean).length,
-      youtubeVideoId: ytMatch?.[1] || null,
-    };
-  });
+/**
+ * Fetch full content of a single Substack post by slug
+ */
+async function fetchSubstackPost(slug: string): Promise<string> {
+  try {
+    // Substack renders content on the page — fetch the post page and extract
+    const res = await fetch(`https://letters.thedankoe.com/p/${slug}`, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) return "";
+    const html = await res.text();
+
+    // Substack puts post content in a div.body.markup
+    const bodyMatch = html.match(
+      /<div[^>]*class="[^"]*body markup[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<div[^>]*class="[^"]*(?:subscription-widget|post-footer|footer)/i
+    );
+    if (bodyMatch) return bodyMatch[1].trim();
+
+    // Fallback: look for available-content
+    const contentMatch = html.match(
+      /<div[^>]*class="[^"]*available-content[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<div[^>]*class="[^"]*(?:paywall|subscription)/i
+    );
+    if (contentMatch) return contentMatch[1].trim();
+
+    // Fallback: try to extract from JSON embedded in page
+    const jsonMatch = html.match(/"body_html"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(`"${jsonMatch[1]}"`);
+      } catch {
+        // ignore
+      }
+    }
+
+    return "";
+  } catch {
+    return "";
+  }
 }
 
 /**
@@ -241,62 +264,83 @@ export async function syncArticles(limit = 0): Promise<SyncResult> {
   const existingSlugs = new Set(existing?.map((a) => a.slug) || []);
 
   // --- Source 1: Substack (newest content, post-2025-09) ---
-  console.log("[sync] Fetching Substack posts...");
-  const substackPosts = await fetchSubstackPosts(limit || 300);
-  console.log(`[sync] Found ${substackPosts.length} Substack posts`);
+  console.log("[sync] Fetching Substack archive...");
+  const archive = await fetchSubstackArchive();
+  console.log(`[sync] Found ${archive.length} Substack posts`);
 
-  const newSubstack = substackPosts.filter(
-    (p) => !existingUrls.has(p.url) && !existingSlugs.has(p.slug)
-  );
+  const newSubstack = archive.filter((p) => {
+    const url =
+      p.canonical_url || `https://letters.thedankoe.com/p/${p.slug}`;
+    return !existingUrls.has(url) && !existingSlugs.has(p.slug);
+  });
+  console.log(`[sync] ${newSubstack.length} new Substack posts`);
 
   let remaining = limit > 0 ? limit : newSubstack.length;
 
-  for (const post of newSubstack) {
+  for (const p of newSubstack) {
     if (remaining <= 0) break;
-    if (!post.title || !post.content) continue;
+    if (!p.title) continue;
+
+    const url =
+      p.canonical_url || `https://letters.thedankoe.com/p/${p.slug}`;
+    console.log(`[sync] Fetching: ${p.title.slice(0, 50)}...`);
+
+    // Fetch full content
+    const content = await fetchSubstackPost(p.slug);
+    if (!content) {
+      result.errors.push(`Failed to fetch Substack content for "${p.title}"`);
+      continue;
+    }
+
+    const plainText = content.replace(/<[^>]+>/g, " ").trim();
+    const wordCount = plainText.split(/\s+/).filter(Boolean).length;
+    const likes = p.reactions?.["❤"] || 0;
+    const publishedAt = p.post_date
+      ? new Date(p.post_date).toISOString()
+      : null;
 
     try {
-      const summaryEn = extractSummary(post.content);
+      const summaryEn = extractSummary(content);
 
       let titleZh = "";
       let contentZh = "";
       let summaryZh = "";
       try {
-        titleZh = await translateText(post.title);
-        contentZh = await translateHTML(post.content);
+        titleZh = await translateText(p.title);
+        contentZh = await translateHTML(content);
         summaryZh = await translateText(summaryEn);
       } catch (translateErr) {
         result.errors.push(
-          `Translation failed for "${post.title}": ${translateErr}`
+          `Translation failed for "${p.title}": ${translateErr}`
         );
       }
 
       const { error } = await supabase.from("articles").insert({
-        slug: post.slug,
-        title_en: post.title,
+        slug: p.slug,
+        title_en: p.title,
         title_zh: titleZh || null,
-        content_en: post.content,
+        content_en: content,
         content_zh: contentZh || null,
         summary_en: summaryEn,
         summary_zh: summaryZh || null,
-        cover_image: post.coverImage,
-        original_url: post.url,
-        published_at: post.publishedAt,
-        word_count: post.wordCount,
-        popularity: post.likes || post.wordCount,
+        cover_image: p.cover_image || null,
+        original_url: url,
+        published_at: publishedAt,
+        word_count: wordCount,
+        popularity: likes || wordCount,
       });
 
       if (error) {
         result.errors.push(
-          `DB insert failed for "${post.title}": ${error.message}`
+          `DB insert failed for "${p.title}": ${error.message}`
         );
       } else {
         result.newArticles++;
         remaining--;
-        console.log(`[sync] Added Substack: ${post.title.slice(0, 50)}`);
+        console.log(`[sync] Added: ${p.title.slice(0, 50)} (${likes} likes)`);
       }
     } catch (err) {
-      result.errors.push(`Error processing Substack "${post.title}": ${err}`);
+      result.errors.push(`Error processing Substack "${p.title}": ${err}`);
     }
   }
 
@@ -310,7 +354,7 @@ export async function syncArticles(limit = 0): Promise<SyncResult> {
   }
   const sitemapUrls = await fetchSitemapUrls();
   const wpUrls = [...new Set([...rssUrls, ...sitemapUrls])];
-  result.total = substackPosts.length + wpUrls.length;
+  result.total = archive.length + wpUrls.length;
 
   // Refresh existing set after Substack inserts
   const { data: existingNow } = await supabase
