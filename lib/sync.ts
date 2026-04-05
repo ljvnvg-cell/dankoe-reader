@@ -166,45 +166,165 @@ async function fetchSitemapUrls(): Promise<string[]> {
   return entries.map((e) => e.url);
 }
 
+const SUBSTACK_API = "https://letters.thedankoe.com/api/v1";
+
 /**
- * Quick sync: check RSS for new articles (daily cron)
+ * Fetch articles from Substack API (post-2025-09 content)
+ */
+async function fetchSubstackPosts(
+  limit: number
+): Promise<
+  {
+    title: string;
+    slug: string;
+    content: string;
+    coverImage: string | null;
+    publishedAt: string | null;
+    url: string;
+    likes: number;
+    wordCount: number;
+    youtubeVideoId: string | null;
+  }[]
+> {
+  const posts: any[] = [];
+  let offset = 0;
+  // Fetch in pages of 50
+  while (posts.length < limit + 200) {
+    try {
+      const res = await fetch(
+        `${SUBSTACK_API}/archive?sort=new&limit=50&offset=${offset}`,
+        {
+          headers: { "User-Agent": "Mozilla/5.0" },
+          signal: AbortSignal.timeout(15000),
+        }
+      );
+      if (!res.ok) break;
+      const batch = await res.json();
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      posts.push(...batch);
+      offset += 50;
+    } catch {
+      break;
+    }
+  }
+
+  return posts.map((p) => {
+    const html = p.body_html || "";
+    const plainText = html.replace(/<[^>]+>/g, " ").trim();
+    const ytMatch = html.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]+)/);
+    return {
+      title: p.title || "",
+      slug: p.slug || slugify(p.title || ""),
+      content: html,
+      coverImage: p.cover_image || null,
+      publishedAt: p.post_date ? new Date(p.post_date).toISOString() : null,
+      url: p.canonical_url || `https://letters.thedankoe.com/p/${p.slug}`,
+      likes: p.reactions?.["❤"] || 0,
+      wordCount: plainText.split(/\s+/).filter(Boolean).length,
+      youtubeVideoId: ytMatch?.[1] || null,
+    };
+  });
+}
+
+/**
+ * Quick sync: check RSS + sitemap + Substack for new articles
  */
 export async function syncArticles(limit = 0): Promise<SyncResult> {
   const supabase = createServerClient();
   const result: SyncResult = { total: 0, newArticles: 0, errors: [] };
 
-  // Try RSS first for recent articles
+  // Get existing article URLs and slugs to avoid duplicates
+  const { data: existing } = await supabase
+    .from("articles")
+    .select("original_url, slug");
+  const existingUrls = new Set(existing?.map((a) => a.original_url) || []);
+  const existingSlugs = new Set(existing?.map((a) => a.slug) || []);
+
+  // --- Source 1: Substack (newest content, post-2025-09) ---
+  console.log("[sync] Fetching Substack posts...");
+  const substackPosts = await fetchSubstackPosts(limit || 300);
+  console.log(`[sync] Found ${substackPosts.length} Substack posts`);
+
+  const newSubstack = substackPosts.filter(
+    (p) => !existingUrls.has(p.url) && !existingSlugs.has(p.slug)
+  );
+
+  let remaining = limit > 0 ? limit : newSubstack.length;
+
+  for (const post of newSubstack) {
+    if (remaining <= 0) break;
+    if (!post.title || !post.content) continue;
+
+    try {
+      const summaryEn = extractSummary(post.content);
+
+      let titleZh = "";
+      let contentZh = "";
+      let summaryZh = "";
+      try {
+        titleZh = await translateText(post.title);
+        contentZh = await translateHTML(post.content);
+        summaryZh = await translateText(summaryEn);
+      } catch (translateErr) {
+        result.errors.push(
+          `Translation failed for "${post.title}": ${translateErr}`
+        );
+      }
+
+      const { error } = await supabase.from("articles").insert({
+        slug: post.slug,
+        title_en: post.title,
+        title_zh: titleZh || null,
+        content_en: post.content,
+        content_zh: contentZh || null,
+        summary_en: summaryEn,
+        summary_zh: summaryZh || null,
+        cover_image: post.coverImage,
+        original_url: post.url,
+        published_at: post.publishedAt,
+        word_count: post.wordCount,
+        popularity: post.likes || post.wordCount,
+      });
+
+      if (error) {
+        result.errors.push(
+          `DB insert failed for "${post.title}": ${error.message}`
+        );
+      } else {
+        result.newArticles++;
+        remaining--;
+        console.log(`[sync] Added Substack: ${post.title.slice(0, 50)}`);
+      }
+    } catch (err) {
+      result.errors.push(`Error processing Substack "${post.title}": ${err}`);
+    }
+  }
+
+  // --- Source 2: WordPress (pre-2025-09 content) ---
   let rssUrls: string[] = [];
   try {
     const feed = await parser.parseURL(RSS_URL);
     rssUrls = feed.items.map((item) => item.link).filter(Boolean) as string[];
   } catch {
-    // RSS failed, will fall back to sitemap
+    // RSS failed
   }
-
-  // Also get all URLs from sitemap
   const sitemapUrls = await fetchSitemapUrls();
+  const wpUrls = [...new Set([...rssUrls, ...sitemapUrls])];
+  result.total = substackPosts.length + wpUrls.length;
 
-  // Merge and deduplicate
-  const allUrls = [...new Set([...rssUrls, ...sitemapUrls])];
-  result.total = allUrls.length;
-
-  if (allUrls.length === 0) {
-    result.errors.push("No article URLs found from RSS or sitemap");
-    return result;
-  }
-
-  // Get existing article URLs to avoid duplicates
-  const { data: existing } = await supabase
+  // Refresh existing set after Substack inserts
+  const { data: existingNow } = await supabase
     .from("articles")
     .select("original_url");
-  const existingUrls = new Set(existing?.map((a) => a.original_url) || []);
+  const existingUrlsNow = new Set(
+    existingNow?.map((a) => a.original_url) || []
+  );
 
-  // Filter to only new articles
-  let newUrls = allUrls.filter((url) => !existingUrls.has(url));
-  if (limit > 0) newUrls = newUrls.slice(0, limit);
+  let newWpUrls = wpUrls.filter((url) => !existingUrlsNow.has(url));
+  if (remaining > 0 && limit > 0) newWpUrls = newWpUrls.slice(0, remaining);
+  else if (limit > 0) newWpUrls = [];
 
-  for (const url of newUrls) {
+  for (const url of newWpUrls) {
     const page = await fetchArticlePage(url);
     if (!page || !page.title || !page.content) {
       result.errors.push(`Failed to fetch content from ${url}`);
@@ -216,7 +336,6 @@ export async function syncArticles(limit = 0): Promise<SyncResult> {
       const summaryEn = extractSummary(page.content);
       const coverImage = extractCoverImage(page.content);
 
-      // Translate
       let titleZh = "";
       let contentZh = "";
       let summaryZh = "";
