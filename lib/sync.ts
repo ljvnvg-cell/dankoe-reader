@@ -40,6 +40,40 @@ export type SyncResult = {
 };
 
 /**
+ * Search YouTube for a Dan Koe video matching the article title,
+ * return viewCount if found.
+ */
+async function matchYouTubeViews(title: string): Promise<{ videoId: string; views: number } | null> {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const q = encodeURIComponent("Dan Koe " + title.slice(0, 60));
+    const searchRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=5&q=${q}&key=${apiKey}`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!searchRes.ok) return null;
+    const searchData = await searchRes.json();
+    const match = searchData.items?.find(
+      (i: any) => i.snippet.channelTitle === "Dan Koe"
+    );
+    if (!match) return null;
+
+    const videoId = match.id.videoId;
+    const statsRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoId}&key=${apiKey}`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!statsRes.ok) return null;
+    const statsData = await statsRes.json();
+    const views = parseInt(statsData.items?.[0]?.statistics?.viewCount || "0");
+    return views > 0 ? { videoId, views } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch article content from a URL by scraping the page
  */
 async function fetchArticlePage(url: string): Promise<{
@@ -315,6 +349,9 @@ export async function syncArticles(limit = 0): Promise<SyncResult> {
         );
       }
 
+      // Try to match YouTube video for unified popularity metric
+      const ytMatch = await matchYouTubeViews(p.title);
+
       const { error } = await supabase.from("articles").insert({
         slug: p.slug,
         title_en: p.title,
@@ -327,7 +364,8 @@ export async function syncArticles(limit = 0): Promise<SyncResult> {
         original_url: url,
         published_at: publishedAt,
         word_count: wordCount,
-        popularity: likes || wordCount,
+        popularity: ytMatch?.views || likes || wordCount,
+        youtube_video_id: ytMatch?.videoId || null,
       });
 
       if (error) {
