@@ -47,6 +47,7 @@ async function fetchArticlePage(url: string): Promise<{
   content: string;
   publishedAt: string | null;
   wordCount: number;
+  youtubeVideoId: string | null;
 } | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(15000), cache: "no-store" });
@@ -111,21 +112,25 @@ async function fetchArticlePage(url: string): Promise<{
       }
     );
 
-    // Calculate word count for popularity estimation
+    // Calculate word count
     const plainText = content.replace(/<[^>]+>/g, " ").trim();
     const wordCount = plainText.split(/\s+/).filter(Boolean).length;
 
-    return { title, content, publishedAt, wordCount };
+    // Extract YouTube video ID if embedded
+    const ytMatch = content.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]+)/);
+    const youtubeVideoId = ytMatch?.[1] || null;
+
+    return { title, content, publishedAt, wordCount, youtubeVideoId };
   } catch {
     return null;
   }
 }
 
 /**
- * Parse sitemap XML and return article URLs
+ * Parse sitemap XML and return article URLs sorted by lastmod (newest first)
  */
 async function fetchSitemapUrls(): Promise<string[]> {
-  const urls: string[] = [];
+  const entries: { url: string; lastmod: string }[] = [];
 
   for (const sitemapUrl of SITEMAPS) {
     try {
@@ -138,23 +143,27 @@ async function fetchSitemapUrls(): Promise<string[]> {
       const xml = await res.text();
       console.log(`[sync] Sitemap size: ${xml.length} bytes`);
 
-      // Extract URLs from sitemap
-      const locMatches = xml.matchAll(/<loc>([^<]+)<\/loc>/g);
-      for (const match of locMatches) {
-        const url = match[1];
-        // Skip index pages like /letters/
+      // Extract URLs with lastmod from sitemap
+      const urlBlocks = xml.matchAll(/<url>([\s\S]*?)<\/url>/g);
+      for (const block of urlBlocks) {
+        const locMatch = block[1].match(/<loc>([^<]+)<\/loc>/);
+        const modMatch = block[1].match(/<lastmod>([^<]+)<\/lastmod>/);
+        if (!locMatch) continue;
+        const url = locMatch[1];
         if (url.endsWith("/letters/") || url.endsWith("/blog/")) continue;
         if (url.includes("/letters/") || url.includes("/blog/")) {
-          urls.push(url);
+          entries.push({ url, lastmod: modMatch?.[1] || "2000-01-01" });
         }
       }
-      console.log(`[sync] Found ${urls.length} URLs so far`);
+      console.log(`[sync] Found ${entries.length} URLs so far`);
     } catch (err) {
       console.error(`[sync] Sitemap fetch failed: ${err}`);
     }
   }
 
-  return urls;
+  // Sort by lastmod descending (newest first)
+  entries.sort((a, b) => b.lastmod.localeCompare(a.lastmod));
+  return entries.map((e) => e.url);
 }
 
 /**
@@ -221,9 +230,6 @@ export async function syncArticles(limit = 0): Promise<SyncResult> {
         );
       }
 
-      // Popularity score: word count as base (longer = more in-depth)
-      const popularity = page.wordCount || 0;
-
       const { error } = await supabase.from("articles").insert({
         slug,
         title_en: page.title,
@@ -236,7 +242,7 @@ export async function syncArticles(limit = 0): Promise<SyncResult> {
         original_url: url,
         published_at: page.publishedAt,
         word_count: page.wordCount || 0,
-        popularity,
+        popularity: page.wordCount || 0,
       });
 
       if (error) {

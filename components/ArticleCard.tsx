@@ -61,8 +61,12 @@ export default function ArticleCard({
               className="w-full h-full object-cover"
             />
           ) : (
-            <div className="text-4xl font-bold text-accent/20 select-none">
-              DK
+            <div className="w-full h-full flex items-center justify-center bg-neutral-100 dark:bg-neutral-800">
+              <img
+                src="/dankoe-avatar.jpg"
+                alt="Dan Koe"
+                className="w-20 h-20 rounded-full opacity-60"
+              />
             </div>
           )}
         </div>
